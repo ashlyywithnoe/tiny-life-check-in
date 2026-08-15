@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tiny-life-check-in",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-15",
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "vars": {
+    "GUILD_ID": "1523898722973388942",
+    "TARGET_CHANNEL_ID": "1523898724034674812",
+    "PING_USER_ID": "",
+    "EMOJI_NAMES": "kibrytroll,pixel_uwu",
+    "SITE_URL": "https://win-of-the-day.pages.dev/"
+  }
+}
