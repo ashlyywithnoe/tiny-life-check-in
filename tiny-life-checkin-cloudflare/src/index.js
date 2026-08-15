@@ -231,6 +231,66 @@ async function registerHappyCommand(applicationId, env) {
   }
 }
 
+
+async function getCurrentApplicationId(env) {
+  if (!env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN is missing.");
+
+  const response = await fetch(`${DISCORD_API}/applications/@me`, {
+    headers: { Authorization: `Bot ${env.DISCORD_TOKEN}` },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Could not get Discord application (${response.status}): ${await response.text()}`);
+  }
+
+  const application = await response.json();
+  if (!application?.id) throw new Error("Discord did not return an application ID.");
+  return application.id;
+}
+
+async function syncGuildCommands(env) {
+  if (!env.GUILD_ID) throw new Error("GUILD_ID is missing.");
+  const applicationId = await getCurrentApplicationId(env);
+
+  const commands = [
+    {
+      name: "tiny",
+      type: 1,
+      description: "Send a fresh Tiny Life Check-In",
+    },
+    {
+      name: "tinystatus",
+      type: 1,
+      description: "Show the Tiny Life and Happy Timezone schedule",
+    },
+    {
+      name: "happy",
+      type: 1,
+      description: "Send a fresh Happy Timezone message",
+    },
+  ];
+
+  const response = await fetch(
+    `${DISCORD_API}/applications/${applicationId}/guilds/${env.GUILD_ID}/commands`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bot ${env.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(commands),
+    },
+  );
+
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`Discord command sync failed (${response.status}): ${body}`);
+  }
+
+  const registered = JSON.parse(body);
+  return registered.map((command) => `/${command.name}`);
+}
+
 async function handleDiscordInteraction(request, env, ctx) {
   const body = await request.text();
   const verified = await verifyDiscordRequest(request, body, env.DISCORD_PUBLIC_KEY);
@@ -282,6 +342,22 @@ export default {
 
     if (request.method === "POST" && (url.pathname === "/" || url.pathname === "/discord")) {
       return handleDiscordInteraction(request, env, ctx);
+    }
+
+    if (request.method === "GET" && url.pathname === "/setup-happy") {
+      try {
+        const commands = await syncGuildCommands(env);
+        return new Response(
+          `SUCCESS! Discord commands synced: ${commands.join(", ")}\n\nYou can close this page and try /happy in Discord now.`,
+          { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } },
+        );
+      } catch (error) {
+        console.error("Command setup failed", error);
+        return new Response(
+          `SETUP FAILED\n\n${error?.message || String(error)}`,
+          { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } },
+        );
+      }
     }
 
     if (request.method === "GET") {
