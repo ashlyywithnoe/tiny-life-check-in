@@ -1,4 +1,5 @@
 import { CHECK_INS } from "./checkins.js";
+import { HAPPY_JOKES, DAY_QUESTS, AS_ALWAYS } from "./happytimezone.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const EASTERN = "America/New_York";
@@ -45,6 +46,7 @@ function easternParts(timestamp) {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    weekday: "long",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
@@ -58,17 +60,19 @@ function easternParts(timestamp) {
     year: Number(pieces.year),
     month: Number(pieces.month),
     day: Number(pieces.day),
+    weekday: pieces.weekday,
     hour: Number(pieces.hour),
     minute: Number(pieces.minute),
   };
 }
 
+function localDayNumber(parts) {
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000);
+}
+
 function scheduledPromptIndex(parts) {
-  const localDayNumber = Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000);
   const slot = parts.hour === 20 ? 1 : 0;
-  const sequence = localDayNumber * 2 + slot;
-  // 37 is coprime with 99, so the original 99-prompt bank cycles through
-  // every prompt before repeating on scheduled sends.
+  const sequence = localDayNumber(parts) * 2 + slot;
   return ((sequence * 37 + 11) % CHECK_INS.length + CHECK_INS.length) % CHECK_INS.length;
 }
 
@@ -78,6 +82,11 @@ function randomPrompt() {
   return CHECK_INS[values[0] % CHECK_INS.length];
 }
 
+function deterministicIndex(seed, length, salt = 0) {
+  if (!length) return 0;
+  return Math.abs((seed * 1103515245 + 12345 + salt * 2654435761) >>> 0) % length;
+}
+
 function emojiNames(env) {
   return (env.EMOJI_NAMES || "")
     .split(",")
@@ -85,33 +94,51 @@ function emojiNames(env) {
     .filter(Boolean);
 }
 
-async function resolveCustomEmoji(env) {
-  const names = emojiNames(env);
-  if (!names.length || !env.GUILD_ID || !env.DISCORD_TOKEN) return "";
-
+async function getGuildEmojis(env) {
+  if (!env.GUILD_ID || !env.DISCORD_TOKEN) return [];
   try {
     const response = await fetch(`${DISCORD_API}/guilds/${env.GUILD_ID}/emojis`, {
       headers: { Authorization: `Bot ${env.DISCORD_TOKEN}` },
     });
     if (!response.ok) {
       console.warn("Could not list guild emojis", response.status, await response.text());
-      return "";
+      return [];
     }
-
-    const emojis = await response.json();
-    const candidates = names
-      .map((name) => emojis.find((emoji) => emoji.name === name))
-      .filter(Boolean);
-    if (!candidates.length) return "";
-
-    const values = new Uint32Array(1);
-    crypto.getRandomValues(values);
-    const emoji = candidates[values[0] % candidates.length];
-    return `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+    return await response.json();
   } catch (error) {
-    console.error("Could not resolve custom emoji", error);
-    return "";
+    console.error("Could not resolve custom emojis", error);
+    return [];
   }
+}
+
+function emojiMarkup(emoji) {
+  return emoji ? `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>` : "";
+}
+
+async function resolveCustomEmoji(env) {
+  const names = emojiNames(env);
+  if (!names.length) return "";
+  const emojis = await getGuildEmojis(env);
+  const candidates = names.map((name) => emojis.find((emoji) => emoji.name === name)).filter(Boolean);
+  if (!candidates.length) return "";
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return emojiMarkup(candidates[values[0] % candidates.length]);
+}
+
+async function resolveHappyEmojis(env) {
+  const emojis = await getGuildEmojis(env);
+  const heart = emojis.find((emoji) => emoji.name === "509898cutepixelheart");
+  const preferredJokeNames = ["kibrytroll", ...emojiNames(env)];
+  const jokeCandidates = preferredJokeNames
+    .map((name) => emojis.find((emoji) => emoji.name === name))
+    .filter(Boolean);
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return {
+    heart: emojiMarkup(heart) || "♡",
+    joke: jokeCandidates.length ? emojiMarkup(jokeCandidates[values[0] % jokeCandidates.length]) : "",
+  };
 }
 
 async function formatCheckin(prompt, env, { includePing = false } = {}) {
@@ -120,6 +147,25 @@ async function formatCheckin(prompt, env, { includePing = false } = {}) {
   const emojiLine = emoji ? `\n${emoji}` : "";
   const siteUrl = env.SITE_URL || DEFAULT_SITE_URL;
   return `${ping}**Tiny Life Check-In**\n${prompt}${emojiLine}\n\n-# add yours: ${siteUrl}`;
+}
+
+async function formatHappyTimezone(parts, env, { includePing = false } = {}) {
+  const daySeed = localDayNumber(parts);
+  const joke = HAPPY_JOKES[deterministicIndex(daySeed, HAPPY_JOKES.length, 17)];
+  const variants = DAY_QUESTS[parts.weekday] || DAY_QUESTS.Monday;
+  const quests = variants[deterministicIndex(daySeed, variants.length, 43)];
+  const emoji = await resolveHappyEmojis(env);
+  const ping = includePing && env.PING_USER_ID ? `<@${env.PING_USER_ID}>\n` : "";
+  const jokeEmoji = emoji.joke ? ` ${emoji.joke}` : "";
+  const questLines = quests.map((quest) => `> ${quest}`).join("\n");
+
+  return `${ping}# ꒰ঌ ${emoji.heart} Happy Timezone! ${emoji.heart} ໒꒱\n` +
+    `|| ${joke[0]}\n${joke[1]}${jokeEmoji} ||\n` +
+    `-# i’ll see myself out\n\n` +
+    `### Tis ${parts.weekday}!\n` +
+    `**Today’s quest is simple:**\n${questLines}\n\n` +
+    `♡ **As always** ♡\n` +
+    AS_ALWAYS.map((line) => `> ${line}`).join("\n");
 }
 
 async function sendChannelMessage(content, env) {
@@ -180,7 +226,7 @@ async function handleDiscordInteraction(request, env) {
 
   if (command === "tinystatus") {
     return interactionResponse(
-      "Tiny Life Check-Ins are scheduled for **12:00 PM** and **8:00 PM Eastern** every day.",
+      "Happy Timezone posts at **7:00 AM Eastern**. Tiny Life Check-Ins post at **12:00 PM** and **8:00 PM Eastern** every day.",
       true,
     );
   }
@@ -197,7 +243,7 @@ export default {
     }
 
     if (request.method === "GET") {
-      return new Response("Tiny Life Check-In is alive. Scheduled for 12 PM + 8 PM Eastern.");
+      return new Response("Happy Timezone: 7 AM ET. Tiny Life Check-In: 12 PM + 8 PM ET.");
     }
 
     return new Response("Not found", { status: 404 });
@@ -205,13 +251,24 @@ export default {
 
   async scheduled(controller, env, ctx) {
     const parts = easternParts(controller.scheduledTime);
-    if (parts.minute !== 0 || ![12, 20].includes(parts.hour)) return;
+    if (parts.minute !== 0) return;
 
-    const prompt = CHECK_INS[scheduledPromptIndex(parts)];
-    ctx.waitUntil((async () => {
-      const content = await formatCheckin(prompt, env, { includePing: true });
-      await sendChannelMessage(content, env);
-      console.log(`Sent Tiny Life Check-In for ${parts.hour}:00 ${EASTERN}`);
-    })());
+    if (parts.hour === 7) {
+      ctx.waitUntil((async () => {
+        const content = await formatHappyTimezone(parts, env, { includePing: true });
+        await sendChannelMessage(content, env);
+        console.log(`Sent Happy Timezone for ${parts.weekday} at 7:00 ${EASTERN}`);
+      })());
+      return;
+    }
+
+    if ([12, 20].includes(parts.hour)) {
+      const prompt = CHECK_INS[scheduledPromptIndex(parts)];
+      ctx.waitUntil((async () => {
+        const content = await formatCheckin(prompt, env, { includePing: true });
+        await sendChannelMessage(content, env);
+        console.log(`Sent Tiny Life Check-In for ${parts.hour}:00 ${EASTERN}`);
+      })());
+    }
   },
 };
