@@ -202,7 +202,36 @@ function interactionResponse(content, ephemeral = false) {
   });
 }
 
-async function handleDiscordInteraction(request, env) {
+
+async function registerHappyCommand(applicationId, env) {
+  if (!applicationId || !env.GUILD_ID || !env.DISCORD_TOKEN) return;
+
+  try {
+    const response = await fetch(
+      `${DISCORD_API}/applications/${applicationId}/guilds/${env.GUILD_ID}/commands`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bot ${env.DISCORD_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "happy",
+          type: 1,
+          description: "Send a fresh Happy Timezone message",
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      console.warn("Could not register /happy", response.status, await response.text());
+    }
+  } catch (error) {
+    console.error("Could not register /happy", error);
+  }
+}
+
+async function handleDiscordInteraction(request, env, ctx) {
   const body = await request.text();
   const verified = await verifyDiscordRequest(request, body, env.DISCORD_PUBLIC_KEY);
   if (!verified) return new Response("invalid request signature", { status: 401 });
@@ -219,6 +248,19 @@ async function handleDiscordInteraction(request, env) {
   }
 
   const command = interaction.data?.name;
+
+  // Existing commands can bootstrap the new /happy command without needing
+  // a computer or a separate setup script. Guild commands appear immediately.
+  if (command === "tiny" || command === "tinystatus") {
+    ctx?.waitUntil(registerHappyCommand(interaction.application_id, env));
+  }
+
+  if (command === "happy") {
+    const parts = easternParts(Date.now());
+    const content = await formatHappyTimezone(parts, env);
+    return interactionResponse(content);
+  }
+
   if (command === "tiny") {
     const content = await formatCheckin(randomPrompt(), env);
     return interactionResponse(content);
@@ -235,11 +277,11 @@ async function handleDiscordInteraction(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "POST" && (url.pathname === "/" || url.pathname === "/discord")) {
-      return handleDiscordInteraction(request, env);
+      return handleDiscordInteraction(request, env, ctx);
     }
 
     if (request.method === "GET") {
